@@ -1,4 +1,5 @@
-use std::fs;
+mod document;
+
 use std::path::PathBuf;
 
 use eframe::egui;
@@ -16,6 +17,7 @@ struct JotPad {
     path: Option<PathBuf>,
     pending_action: Option<PendingAction>,
     error: Option<String>,
+    notice: Option<String>,
     dark_mode: bool,
 }
 
@@ -27,6 +29,7 @@ impl Default for JotPad {
             path: None,
             pending_action: None,
             error: None,
+            notice: None,
             dark_mode: true,
         }
     }
@@ -52,6 +55,7 @@ impl JotPad {
                 self.saved_text.clear();
                 self.path = None;
                 self.error = None;
+                self.notice = None;
             }
             PendingAction::Open => self.open_file(),
         }
@@ -59,17 +63,26 @@ impl JotPad {
 
     fn open_file(&mut self) {
         if let Some(path) = FileDialog::new()
-            .add_filter("Text files", &["txt", "md", "log", "rs", "toml"])
+            .add_filter("Documents", &["txt", "md", "docx", "log"])
             .pick_file()
         {
-            match fs::read_to_string(&path) {
+            match document::load(&path) {
                 Ok(contents) => {
                     self.text = contents;
                     self.saved_text = self.text.clone();
+                    self.notice = if path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("docx"))
+                    {
+                        Some("DOCX opened as text; formatting and page layout are not retained.".to_owned())
+                    } else {
+                        None
+                    };
                     self.path = Some(path);
                     self.error = None;
                 }
-                Err(error) => self.error = Some(format!("Could not open file: {error}")),
+                Err(error) => self.error = Some(error),
             }
         }
     }
@@ -77,7 +90,7 @@ impl JotPad {
     fn save_file(&mut self, save_as: bool) {
         let path = if save_as || self.path.is_none() {
             FileDialog::new()
-                .add_filter("Text files", &["txt", "md", "log", "rs", "toml"])
+                .add_filter("Text documents and Word DOCX", &["txt", "md", "docx"])
                 .set_file_name("untitled.txt")
                 .save_file()
         } else {
@@ -88,13 +101,14 @@ impl JotPad {
             return;
         };
 
-        match fs::write(&path, &self.text) {
+        match document::save(&path, &self.text) {
             Ok(()) => {
                 self.saved_text = self.text.clone();
                 self.path = Some(path);
                 self.error = None;
+                self.notice = None;
             }
-            Err(error) => self.error = Some(format!("Could not save file: {error}")),
+            Err(error) => self.error = Some(error),
         }
     }
 
@@ -112,6 +126,10 @@ impl JotPad {
             if self.is_dirty() { " •" } else { "" }
         )
     }
+
+    fn word_count(&self) -> usize {
+        self.text.split_whitespace().count()
+    }
 }
 
 impl eframe::App for JotPad {
@@ -123,14 +141,12 @@ impl eframe::App for JotPad {
         } else {
             egui::Visuals::light()
         };
-
         visuals.widgets.noninteractive.rounding = 12.0;
         visuals.widgets.active.rounding = 12.0;
         visuals.widgets.hovered.rounding = 12.0;
         visuals.widgets.inactive.rounding = 12.0;
         visuals.window_rounding = 0.0;
         visuals.selection.bg_fill = egui::Color32::from_rgb(86, 156, 214);
-        visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(164, 206, 255));
         ctx.set_visuals(visuals);
 
         let (new, open, save) = ctx.input_mut(|input| {
@@ -155,31 +171,28 @@ impl eframe::App for JotPad {
             .min_height(56.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.add_sized(
-                        [94.0, 36.0],
-                        egui::Button::new("New").rounding(12.0),
-                    ).clicked() {
+                    if ui
+                        .add_sized([94.0, 36.0], egui::Button::new("New").rounding(12.0))
+                        .clicked()
+                    {
                         self.request_action(PendingAction::New);
                     }
-
-                    if ui.add_sized(
-                        [94.0, 36.0],
-                        egui::Button::new("Open").rounding(12.0),
-                    ).clicked() {
+                    if ui
+                        .add_sized([94.0, 36.0], egui::Button::new("Open").rounding(12.0))
+                        .clicked()
+                    {
                         self.request_action(PendingAction::Open);
                     }
-
-                    if ui.add_sized(
-                        [94.0, 36.0],
-                        egui::Button::new("Save").rounding(12.0),
-                    ).clicked() {
+                    if ui
+                        .add_sized([94.0, 36.0], egui::Button::new("Save").rounding(12.0))
+                        .clicked()
+                    {
                         self.save_file(false);
                     }
-
-                    if ui.add_sized(
-                        [110.0, 36.0],
-                        egui::Button::new("Save as…").rounding(12.0),
-                    ).clicked() {
+                    if ui
+                        .add_sized([110.0, 36.0], egui::Button::new("Save as…").rounding(12.0))
+                        .clicked()
+                    {
                         self.save_file(true);
                     }
 
@@ -193,19 +206,19 @@ impl eframe::App for JotPad {
             let frame = egui::Frame::central_panel(&ctx.style())
                 .fill(ui.visuals().panel_fill)
                 .inner_margin(egui::Margin::same(8.0))
-                .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color));
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    ui.visuals().widgets.noninteractive.bg_stroke.color,
+                ));
 
             frame.show(ui, |ui| {
-                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    let text_edit = egui::TextEdit::multiline(&mut self.text)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(28)
-                        .lock_focus(true)
-                        .code_editor();
-
-                    ui.add_sized(ui.available_size(), text_edit);
-                });
+                let text_edit = egui::TextEdit::multiline(&mut self.text)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(28)
+                    .lock_focus(true)
+                    .code_editor();
+                ui.add_sized(ui.available_size(), text_edit);
             });
         });
 
@@ -213,12 +226,22 @@ impl eframe::App for JotPad {
             .min_height(32.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(format!("{} chars", self.text.chars().count()));
+                    ui.label(format!("{} words", self.word_count()));
                     ui.separator();
-                    ui.label(self.path.as_ref().map_or("Untitled", |path| path.to_str().unwrap_or("Untitled")));
+                    ui.label(format!("{} characters", self.text.chars().count()));
+                    ui.separator();
+                    ui.label(self.path.as_ref().map_or("Untitled", |path| {
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("Untitled")
+                    }));
                     if self.is_dirty() {
                         ui.separator();
                         ui.label("Unsaved changes");
+                    }
+                    if let Some(notice) = &self.notice {
+                        ui.separator();
+                        ui.label(notice);
                     }
                     if let Some(error) = &self.error {
                         ui.separator();
@@ -236,20 +259,33 @@ impl eframe::App for JotPad {
                     ui.vertical_centered(|ui| {
                         ui.label("You have unsaved changes. What would you like to do?");
                         ui.horizontal(|ui| {
-                            if ui.add_sized([90.0, 32.0], egui::Button::new("Save").rounding(12.0)).clicked() {
+                            if ui
+                                .add_sized([90.0, 32.0], egui::Button::new("Save").rounding(12.0))
+                                .clicked()
+                            {
                                 self.save_file(false);
                                 if !self.is_dirty() {
                                     self.pending_action = None;
                                     self.perform_action(action);
                                 }
                             }
-
-                            if ui.add_sized([90.0, 32.0], egui::Button::new("Discard").rounding(12.0)).clicked() {
+                            if ui
+                                .add_sized(
+                                    [90.0, 32.0],
+                                    egui::Button::new("Discard").rounding(12.0),
+                                )
+                                .clicked()
+                            {
                                 self.pending_action = None;
                                 self.perform_action(action);
                             }
-
-                            if ui.add_sized([90.0, 32.0], egui::Button::new("Cancel").rounding(12.0)).clicked() {
+                            if ui
+                                .add_sized(
+                                    [90.0, 32.0],
+                                    egui::Button::new("Cancel").rounding(12.0),
+                                )
+                                .clicked()
+                            {
                                 self.pending_action = None;
                             }
                         });

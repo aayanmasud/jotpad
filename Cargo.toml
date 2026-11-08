@@ -2,12 +2,15 @@
 name = "jotpad"
 version = "0.1.0"
 edition = "2021"
-description = "A polished lightweight desktop notepad for Linux"
+description = "A lightweight desktop notepad for Linux with text-focused DOCX support"
 
 [[bin]]
 name = "jotpad"
 path = "src/main.rs"
 
 [dependencies]
+docx-rs = "0.4.22"
 eframe = "0.31"
 rfd = "0.15"
+roxmltree = "0.20"
+zip = { version = "4", default-features = false, features = ["deflate"] }

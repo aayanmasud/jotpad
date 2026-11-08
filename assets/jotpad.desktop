@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=JotPad
+Comment=Lightweight Markdown editor and notepad
+Exec=jotpad
+Terminal=false
+Categories=Utility;TextEditor;
+StartupNotify=true

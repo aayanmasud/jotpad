@@ -1,0 +1,13 @@
+[package]
+name = "jotpad"
+version = "0.1.0"
+edition = "2021"
+description = "A polished lightweight desktop notepad for Linux"
+
+[[bin]]
+name = "jotpad"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.31"
+rfd = "0.15"

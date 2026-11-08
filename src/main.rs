@@ -141,12 +141,18 @@ impl eframe::App for JotPad {
         } else {
             egui::Visuals::light()
         };
-        visuals.widgets.noninteractive.rounding = 12.0;
-        visuals.widgets.active.rounding = 12.0;
-        visuals.widgets.hovered.rounding = 12.0;
-        visuals.widgets.inactive.rounding = 12.0;
-        visuals.window_rounding = 0.0;
-        visuals.selection.bg_fill = egui::Color32::from_rgb(86, 156, 214);
+
+        ctx.style_mut(|style| {
+            style.visuals = visuals.clone();
+            style.visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(12);
+            style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(12);
+            style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(12);
+            style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(12);
+            style.visuals.selection.bg_fill = egui::Color32::from_rgb(86, 156, 214);
+            style.visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(164, 206, 255));
+        });
+
+        visuals = ctx.style().visuals.clone();
         ctx.set_visuals(visuals);
 
         let (new, open, save) = ctx.input_mut(|input| {
@@ -172,25 +178,25 @@ impl eframe::App for JotPad {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui
-                        .add_sized([94.0, 36.0], egui::Button::new("New").rounding(12.0))
+                        .add_sized([94.0, 36.0], egui::Button::new("New").corner_radius(12.0))
                         .clicked()
                     {
                         self.request_action(PendingAction::New);
                     }
                     if ui
-                        .add_sized([94.0, 36.0], egui::Button::new("Open").rounding(12.0))
+                        .add_sized([94.0, 36.0], egui::Button::new("Open").corner_radius(12.0))
                         .clicked()
                     {
                         self.request_action(PendingAction::Open);
                     }
                     if ui
-                        .add_sized([94.0, 36.0], egui::Button::new("Save").rounding(12.0))
+                        .add_sized([94.0, 36.0], egui::Button::new("Save").corner_radius(12.0))
                         .clicked()
                     {
                         self.save_file(false);
                     }
                     if ui
-                        .add_sized([110.0, 36.0], egui::Button::new("Save as…").rounding(12.0))
+                        .add_sized([110.0, 36.0], egui::Button::new("Save as…").corner_radius(12.0))
                         .clicked()
                     {
                         self.save_file(true);
@@ -205,9 +211,9 @@ impl eframe::App for JotPad {
         egui::CentralPanel::default().show(ctx, |ui| {
             let frame = egui::Frame::central_panel(&ctx.style())
                 .fill(ui.visuals().panel_fill)
-                .inner_margin(egui::Margin::same(8.0))
+                .inner_margin(egui::Margin::same(8))
                 .stroke(egui::Stroke::new(
-                    1.0,
+                    1.0_f32,
                     ui.visuals().widgets.noninteractive.bg_stroke.color,
                 ));
 
@@ -260,7 +266,7 @@ impl eframe::App for JotPad {
                         ui.label("You have unsaved changes. What would you like to do?");
                         ui.horizontal(|ui| {
                             if ui
-                                .add_sized([90.0, 32.0], egui::Button::new("Save").rounding(12.0))
+                                .add_sized([90.0, 32.0], egui::Button::new("Save").corner_radius(12.0))
                                 .clicked()
                             {
                                 self.save_file(false);
@@ -270,20 +276,14 @@ impl eframe::App for JotPad {
                                 }
                             }
                             if ui
-                                .add_sized(
-                                    [90.0, 32.0],
-                                    egui::Button::new("Discard").rounding(12.0),
-                                )
+                                .add_sized([90.0, 32.0], egui::Button::new("Discard").corner_radius(12.0))
                                 .clicked()
                             {
                                 self.pending_action = None;
                                 self.perform_action(action);
                             }
                             if ui
-                                .add_sized(
-                                    [90.0, 32.0],
-                                    egui::Button::new("Cancel").rounding(12.0),
-                                )
+                                .add_sized([90.0, 32.0], egui::Button::new("Cancel").corner_radius(12.0))
                                 .clicked()
                             {
                                 self.pending_action = None;

@@ -3,12 +3,27 @@ mod document;
 use std::path::PathBuf;
 
 use eframe::egui;
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use rfd::FileDialog;
 
 #[derive(Clone, Copy)]
 enum PendingAction {
     New,
     Open,
+}
+
+#[derive(Clone, Copy)]
+enum PreviewKind {
+    Paragraph,
+    Heading(HeadingLevel),
+    ListItem,
+    Code,
+    Quote,
+}
+
+struct PreviewBlock {
+    kind: PreviewKind,
+    text: String,
 }
 
 struct JotPad {
@@ -19,6 +34,7 @@ struct JotPad {
     error: Option<String>,
     notice: Option<String>,
     dark_mode: bool,
+    show_preview: bool,
 }
 
 impl Default for JotPad {
@@ -31,6 +47,7 @@ impl Default for JotPad {
             error: None,
             notice: None,
             dark_mode: true,
+            show_preview: false,
         }
     }
 }
@@ -90,8 +107,8 @@ impl JotPad {
     fn save_file(&mut self, save_as: bool) {
         let path = if save_as || self.path.is_none() {
             FileDialog::new()
-                .add_filter("Text documents and Word DOCX", &["txt", "md", "docx"])
-                .set_file_name("untitled.txt")
+                .add_filter("Text documents and Markdown", &["txt", "md"])
+                .set_file_name("untitled.md")
                 .save_file()
         } else {
             self.path.clone()
@@ -107,6 +124,28 @@ impl JotPad {
                 self.path = Some(path);
                 self.error = None;
                 self.notice = None;
+            }
+            Err(error) => self.error = Some(error),
+        }
+    }
+
+    fn export_docx(&mut self) {
+        let path = FileDialog::new()
+            .add_filter("Word document", &["docx"])
+            .set_file_name("untitled.docx")
+            .save_file();
+
+        let Some(path) = path else {
+            return;
+        };
+
+        let plain_text = markdown_to_plain_text(&self.text);
+        match document::save(&path, &plain_text) {
+            Ok(()) => {
+                self.error = None;
+                self.notice = Some(
+                    "Exported to DOCX as plain text; Markdown styling is not included.".to_owned(),
+                );
             }
             Err(error) => self.error = Some(error),
         }
@@ -132,6 +171,137 @@ impl JotPad {
     }
 }
 
+fn heading_size(level: HeadingLevel) -> f32 {
+    match level {
+        HeadingLevel::H1 => 26.0,
+        HeadingLevel::H2 => 23.0,
+        HeadingLevel::H3 => 20.0,
+        HeadingLevel::H4 => 18.0,
+        HeadingLevel::H5 => 16.0,
+        HeadingLevel::H6 => 14.0,
+    }
+}
+
+fn markdown_preview_blocks(markdown: &str) -> Vec<PreviewBlock> {
+    let mut blocks = Vec::new();
+    let mut current: Option<PreviewBlock> = None;
+
+    let flush = |current: &mut Option<PreviewBlock>, blocks: &mut Vec<PreviewBlock>| {
+        if let Some(block) = current.take() {
+            if !block.text.trim().is_empty() {
+                blocks.push(block);
+            }
+        }
+    };
+
+    for event in Parser::new(markdown) {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                flush(&mut current, &mut blocks);
+                current = Some(PreviewBlock {
+                    kind: PreviewKind::Heading(level),
+                    text: String::new(),
+                });
+            }
+            Event::Start(Tag::Paragraph) => {
+                flush(&mut current, &mut blocks);
+                current = Some(PreviewBlock {
+                    kind: PreviewKind::Paragraph,
+                    text: String::new(),
+                });
+            }
+            Event::Start(Tag::Item) => {
+                flush(&mut current, &mut blocks);
+                current = Some(PreviewBlock {
+                    kind: PreviewKind::ListItem,
+                    text: "• ".to_owned(),
+                });
+            }
+            Event::Start(Tag::CodeBlock(_)) => {
+                flush(&mut current, &mut blocks);
+                current = Some(PreviewBlock {
+                    kind: PreviewKind::Code,
+                    text: String::new(),
+                });
+            }
+            Event::Start(Tag::BlockQuote(_)) => {
+                flush(&mut current, &mut blocks);
+                current = Some(PreviewBlock {
+                    kind: PreviewKind::Quote,
+                    text: "│ ".to_owned(),
+                });
+            }
+            Event::End(
+                TagEnd::Heading(_)
+                | TagEnd::Paragraph
+                | TagEnd::Item
+                | TagEnd::CodeBlock
+                | TagEnd::BlockQuote,
+            ) => flush(&mut current, &mut blocks),
+            Event::Text(text) | Event::Code(text) | Event::Html(text) | Event::InlineHtml(text) => {
+                current
+                    .get_or_insert_with(|| PreviewBlock {
+                        kind: PreviewKind::Paragraph,
+                        text: String::new(),
+                    })
+                    .text
+                    .push_str(&text);
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some(block) = current.as_mut() {
+                    block.text.push('\n');
+                }
+            }
+            Event::Rule => {
+                flush(&mut current, &mut blocks);
+                blocks.push(PreviewBlock {
+                    kind: PreviewKind::Paragraph,
+                    text: "────────────────────────".to_owned(),
+                });
+            }
+            Event::TaskListMarker(checked) => {
+                let block = current.get_or_insert_with(|| PreviewBlock {
+                    kind: PreviewKind::ListItem,
+                    text: String::new(),
+                });
+                block.text.push_str(if checked { "☑ " } else { "☐ " });
+            }
+            _ => {}
+        }
+    }
+
+    flush(&mut current, &mut blocks);
+    blocks
+}
+
+fn markdown_to_plain_text(markdown: &str) -> String {
+    let mut output = String::new();
+
+    for event in Parser::new(markdown) {
+        match event {
+            Event::Start(Tag::Item) => output.push_str("• "),
+            Event::Text(text) | Event::Code(text) | Event::Html(text) | Event::InlineHtml(text) => {
+                output.push_str(&text);
+            }
+            Event::SoftBreak | Event::HardBreak => output.push('\n'),
+            Event::End(
+                TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::Item
+                | TagEnd::CodeBlock
+                | TagEnd::BlockQuote,
+            ) => output.push('\n'),
+            Event::Rule => output.push_str("\n────────────────────────\n"),
+            Event::TaskListMarker(checked) => {
+                output.push_str(if checked { "☑ " } else { "☐ " });
+            }
+            _ => {}
+        }
+    }
+
+    output.trim().to_owned()
+}
+
 impl eframe::App for JotPad {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
@@ -141,7 +311,6 @@ impl eframe::App for JotPad {
         } else {
             egui::Visuals::light()
         };
-
         ctx.style_mut(|style| {
             style.visuals = visuals.clone();
             style.visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(12);
@@ -149,9 +318,9 @@ impl eframe::App for JotPad {
             style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(12);
             style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(12);
             style.visuals.selection.bg_fill = egui::Color32::from_rgb(86, 156, 214);
-            style.visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(164, 206, 255));
+            style.visuals.selection.stroke =
+                egui::Stroke::new(1.0, egui::Color32::from_rgb(164, 206, 255));
         });
-
         visuals = ctx.style().visuals.clone();
         ctx.set_visuals(visuals);
 
@@ -162,7 +331,6 @@ impl eframe::App for JotPad {
                 input.consume_key(egui::Modifiers::COMMAND, egui::Key::S),
             )
         });
-
         if new {
             self.request_action(PendingAction::New);
         }
@@ -178,30 +346,36 @@ impl eframe::App for JotPad {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui
-                        .add_sized([94.0, 36.0], egui::Button::new("New").corner_radius(12.0))
+                        .add_sized([68.0, 36.0], egui::Button::new("New").corner_radius(12.0))
                         .clicked()
                     {
                         self.request_action(PendingAction::New);
                     }
                     if ui
-                        .add_sized([94.0, 36.0], egui::Button::new("Open").corner_radius(12.0))
+                        .add_sized([68.0, 36.0], egui::Button::new("Open").corner_radius(12.0))
                         .clicked()
                     {
                         self.request_action(PendingAction::Open);
                     }
                     if ui
-                        .add_sized([94.0, 36.0], egui::Button::new("Save").corner_radius(12.0))
+                        .add_sized([68.0, 36.0], egui::Button::new("Save").corner_radius(12.0))
                         .clicked()
                     {
                         self.save_file(false);
                     }
                     if ui
-                        .add_sized([110.0, 36.0], egui::Button::new("Save as…").corner_radius(12.0))
+                        .add_sized([84.0, 36.0], egui::Button::new("Save as").corner_radius(12.0))
                         .clicked()
                     {
                         self.save_file(true);
                     }
-
+                    if ui
+                        .add_sized([100.0, 36.0], egui::Button::new("Export DOCX").corner_radius(12.0))
+                        .clicked()
+                    {
+                        self.export_docx();
+                    }
+                    ui.checkbox(&mut self.show_preview, "Preview");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.toggle_value(&mut self.dark_mode, "Dark");
                     });
@@ -209,23 +383,67 @@ impl eframe::App for JotPad {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let frame = egui::Frame::central_panel(&ctx.style())
-                .fill(ui.visuals().panel_fill)
-                .inner_margin(egui::Margin::same(8))
-                .stroke(egui::Stroke::new(
-                    1.0_f32,
-                    ui.visuals().widgets.noninteractive.bg_stroke.color,
-                ));
-
-            frame.show(ui, |ui| {
-                let text_edit = egui::TextEdit::multiline(&mut self.text)
-                    .font(egui::TextStyle::Monospace)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(28)
-                    .lock_focus(true)
-                    .code_editor();
-                ui.add_sized(ui.available_size(), text_edit);
-            });
+            if self.show_preview {
+                let spacing = ui.spacing().item_spacing.x;
+                ui.columns(2, |columns| {
+                    columns[0].vertical(|ui| {
+                        ui.label("Markdown");
+                        ui.add_sized(
+                            ui.available_size(),
+                            egui::TextEdit::multiline(&mut self.text)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(20)
+                                .code_editor(),
+                        );
+                    });
+                    columns[1].vertical(|ui| {
+                        ui.label("Preview");
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for block in markdown_preview_blocks(&self.text) {
+                                match block.kind {
+                                    PreviewKind::Heading(level) => {
+                                        ui.add(egui::Label::new(
+                                            egui::RichText::new(block.text)
+                                                .size(heading_size(level))
+                                                .strong(),
+                                        ));
+                                    }
+                                    PreviewKind::Code => {
+                                        ui.label(egui::RichText::new(block.text).monospace());
+                                    }
+                                    PreviewKind::Quote => {
+                                        ui.label(egui::RichText::new(block.text).italics());
+                                    }
+                                    PreviewKind::ListItem | PreviewKind::Paragraph => {
+                                        ui.label(block.text);
+                                    }
+                                }
+                                ui.add_space(4.0);
+                            }
+                        });
+                    });
+                });
+                let _ = spacing;
+            } else {
+                let frame = egui::Frame::central_panel(&ui.style())
+                    .fill(ui.visuals().panel_fill)
+                    .inner_margin(egui::Margin::same(8))
+                    .stroke(egui::Stroke::new(
+                        1.0_f32,
+                        ui.visuals().widgets.noninteractive.bg_stroke.color,
+                    ));
+                frame.show(ui, |ui| {
+                    ui.add_sized(
+                        ui.available_size(),
+                        egui::TextEdit::multiline(&mut self.text)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(20)
+                            .code_editor(),
+                    );
+                });
+            }
         });
 
         egui::TopBottomPanel::bottom("status")
@@ -297,7 +515,9 @@ impl eframe::App for JotPad {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 650.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([620.0, 420.0])
+            .with_min_inner_size([420.0, 300.0]),
         ..Default::default()
     };
 

@@ -10,7 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 docx-rs = "0.4.22"
-eframe = "0.31"
+ef rame = "0.31"
+pulldown-cmark = "0.12"
 rfd = "0.15"
 roxmltree = "0.20"
 zip = { version = "4", default-features = false, features = ["deflate"] }

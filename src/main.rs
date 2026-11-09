@@ -1,32 +1,35 @@
 mod document;
 
-use std::{path::PathBuf, sync::mpsc::{self, Receiver, Sender}, thread, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::mpsc::{self, Receiver, Sender},
+    thread,
+    time::Duration,
+};
 
 use eframe::egui;
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use rfd::FileDialog;
 
 const LATEST_RELEASE_API: &str = "https://api.github.com/repos/aayanmasud/jotpad/releases/latest";
+const MAX_RECENT_FILES: usize = 10;
 
 #[derive(Clone, Copy)]
 enum PendingAction { New, Open }
-
 #[derive(Clone, Copy)]
 enum FormatAction { Bold, Italic, Code, Heading(u8), Paragraph, BulletList, NumberedList, Quote, CodeBlock, HorizontalRule }
-
 #[derive(Clone, Copy)]
 enum PreviewKind { Paragraph, Heading(HeadingLevel), ListItem, Code, Quote }
-
 struct PreviewBlock { kind: PreviewKind, text: String }
-
 struct ReleaseInfo { version: String, url: String }
-
 enum UpdateCheckResult { Update(ReleaseInfo), UpToDate, NoRelease, Failed(String) }
 
 struct JotPad {
     text: String,
     saved_text: String,
     path: Option<PathBuf>,
+    recent_files: Vec<PathBuf>,
+    show_start: bool,
     pending_action: Option<PendingAction>,
     pending_format: Option<FormatAction>,
     selection: (usize, usize),
@@ -42,20 +45,29 @@ struct JotPad {
     update_status: String,
 }
 
+fn recent_file_path() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config/jotpad/recent-files"))
+}
+
+fn load_recent_files() -> Vec<PathBuf> {
+    let Some(path) = recent_file_path() else { return Vec::new() };
+    std::fs::read_to_string(path).unwrap_or_default().lines().map(PathBuf::from)
+        .filter(|path| path.exists()).take(MAX_RECENT_FILES).collect()
+}
+
 impl Default for JotPad {
     fn default() -> Self {
         let (request_tx, request_rx) = mpsc::channel::<()>();
         let (result_tx, result_rx) = mpsc::channel::<UpdateCheckResult>();
         thread::spawn(move || {
             while request_rx.recv().is_ok() {
-                let result = check_for_updates();
-                if result_tx.send(result).is_err() { break; }
+                if result_tx.send(check_for_updates()).is_err() { break; }
             }
         });
         let _ = request_tx.send(());
-
         Self {
             text: String::new(), saved_text: String::new(), path: None,
+            recent_files: load_recent_files(), show_start: true,
             pending_action: None, pending_format: None, selection: (0, 0),
             error: None, notice: None, dark_mode: true, show_preview: false,
             editor_font_size: 16.0, editor_color: egui::Color32::WHITE,
@@ -71,41 +83,45 @@ fn check_for_updates() -> UpdateCheckResult {
         Err(error) => return UpdateCheckResult::Failed(error.to_string()),
     };
     let response = match client.get(LATEST_RELEASE_API)
-        .header(reqwest::header::USER_AGENT, concat!("JotPad/", env!("CARGO_PKG_VERSION")))
-        .send() {
+        .header(reqwest::header::USER_AGENT, concat!("JotPad/", env!("CARGO_PKG_VERSION"))).send() {
         Ok(response) => response,
         Err(error) => return UpdateCheckResult::Failed(error.to_string()),
     };
     if response.status() == reqwest::StatusCode::NOT_FOUND { return UpdateCheckResult::NoRelease; }
-    if !response.status().is_success() {
-        return UpdateCheckResult::Failed(format!("GitHub returned HTTP {}", response.status()));
-    }
+    if !response.status().is_success() { return UpdateCheckResult::Failed(format!("GitHub returned HTTP {}", response.status())); }
     let release: serde_json::Value = match response.json() {
-        Ok(release) => release,
-        Err(error) => return UpdateCheckResult::Failed(format!("Could not read release info: {error}")),
+        Ok(value) => value,
+        Err(error) => return UpdateCheckResult::Failed(format!("Could not read release information: {error}")),
     };
-    let tag = match release.get("tag_name").and_then(serde_json::Value::as_str) {
-        Some(tag) => tag,
-        None => return UpdateCheckResult::Failed("GitHub release is missing its version tag".to_owned()),
+    let Some(tag) = release.get("tag_name").and_then(serde_json::Value::as_str) else {
+        return UpdateCheckResult::Failed("GitHub release is missing its version tag".to_owned());
     };
-    let url = release.get("html_url").and_then(serde_json::Value::as_str).unwrap_or("https://github.com/aayanmasud/jotpad/releases");
-    let current = match semver::Version::parse(env!("CARGO_PKG_VERSION")) {
-        Ok(version) => version,
-        Err(error) => return UpdateCheckResult::Failed(format!("Invalid app version: {error}")),
+    let url = release.get("html_url").and_then(serde_json::Value::as_str)
+        .unwrap_or("https://github.com/aayanmasud/jotpad/releases");
+    let Ok(current) = semver::Version::parse(env!("CARGO_PKG_VERSION")) else {
+        return UpdateCheckResult::Failed("The installed version is invalid".to_owned());
     };
-    let latest = match semver::Version::parse(tag.trim_start_matches('v')) {
-        Ok(version) => version,
-        Err(_) => return UpdateCheckResult::Failed(format!("Release tag '{tag}' is not a valid semantic version")),
+    let Ok(latest) = semver::Version::parse(tag.trim_start_matches('v')) else {
+        return UpdateCheckResult::Failed(format!("Release tag '{tag}' is not a semantic version"));
     };
     if latest > current {
         UpdateCheckResult::Update(ReleaseInfo { version: tag.to_owned(), url: url.to_owned() })
-    } else {
-        UpdateCheckResult::UpToDate
-    }
+    } else { UpdateCheckResult::UpToDate }
 }
 
 impl JotPad {
     fn is_dirty(&self) -> bool { self.text != self.saved_text }
+
+    fn remember_file(&mut self, path: &PathBuf) {
+        self.recent_files.retain(|recent| recent != path);
+        self.recent_files.insert(0, path.clone());
+        self.recent_files.truncate(MAX_RECENT_FILES);
+        if let Some(storage) = recent_file_path() {
+            if let Some(parent) = storage.parent() { let _ = std::fs::create_dir_all(parent); }
+            let contents = self.recent_files.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\n");
+            let _ = std::fs::write(storage, contents);
+        }
+    }
 
     fn request_action(&mut self, action: PendingAction) {
         if self.is_dirty() { self.pending_action = Some(action); } else { self.perform_action(action); }
@@ -115,25 +131,28 @@ impl JotPad {
         match action {
             PendingAction::New => {
                 self.text.clear(); self.saved_text.clear(); self.path = None;
-                self.error = None; self.notice = None; self.selection = (0, 0);
+                self.error = None; self.notice = None; self.selection = (0, 0); self.show_start = false;
             }
             PendingAction::Open => self.open_file(),
         }
     }
 
-    fn open_file(&mut self) {
-        if let Some(path) = FileDialog::new().add_filter("Documents", &["txt", "md", "docx", "log"]).pick_file() {
-            match document::load(&path) {
-                Ok(contents) => {
-                    self.text = contents; self.saved_text = self.text.clone();
-                    self.notice = if path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("docx")) {
-                        Some("DOCX opened as text; formatting and page layout are not retained.".to_owned())
-                    } else { None };
-                    self.path = Some(path); self.error = None; self.selection = (0, 0);
-                }
-                Err(error) => self.error = Some(error),
+    fn load_path(&mut self, path: PathBuf) {
+        match document::load(&path) {
+            Ok(contents) => {
+                self.text = contents; self.saved_text = self.text.clone();
+                self.notice = if path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("docx")) {
+                    Some("DOCX opened as text; formatting and page layout are not retained.".to_owned())
+                } else { None };
+                self.path = Some(path.clone()); self.remember_file(&path); self.error = None;
+                self.selection = (0, 0); self.show_start = false;
             }
+            Err(error) => self.error = Some(error),
         }
+    }
+
+    fn open_file(&mut self) {
+        if let Some(path) = FileDialog::new().add_filter("Documents", &["txt", "md", "docx", "log"]).pick_file() { self.load_path(path); }
     }
 
     fn save_file(&mut self, save_as: bool) {
@@ -142,7 +161,10 @@ impl JotPad {
         } else { self.path.clone() };
         let Some(path) = path else { return };
         match document::save(&path, &self.text) {
-            Ok(()) => { self.saved_text = self.text.clone(); self.path = Some(path); self.error = None; self.notice = None; }
+            Ok(()) => {
+                self.saved_text = self.text.clone(); self.path = Some(path.clone()); self.remember_file(&path);
+                self.error = None; self.notice = None; self.show_start = false;
+            }
             Err(error) => self.error = Some(error),
         }
     }
@@ -174,22 +196,19 @@ impl JotPad {
 
     fn wrap_selection(&mut self, before: &str, after: &str) {
         let (start, end) = self.selection;
-        let start = char_to_byte(&self.text, start);
-        let end = char_to_byte(&self.text, end);
+        let start = char_to_byte(&self.text, start); let end = char_to_byte(&self.text, end);
         self.text.insert_str(end, after); self.text.insert_str(start, before);
     }
 
     fn prefix_selected_lines(&mut self, prefix: &str) {
         let (start, end) = self.selection;
-        let start = char_to_byte(&self.text, start);
-        let end = char_to_byte(&self.text, end);
-        let line_start = self.text[..start].rfind('\n').map_or(0, |index| index + 1);
-        let line_end = self.text[end..].find('\n').map_or(self.text.len(), |index| end + index);
+        let start = char_to_byte(&self.text, start); let end = char_to_byte(&self.text, end);
+        let line_start = self.text[..start].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = self.text[end..].find('\n').map_or(self.text.len(), |i| end + i);
         if prefix.is_empty() {
             let line = &self.text[line_start..line_end];
             let content_start = line.find(|c: char| c != '#' && c != ' ').unwrap_or(line.len());
-            let content = line[content_start..].to_owned();
-            self.text.replace_range(line_start..line_end, &content);
+            let content = line[content_start..].to_owned(); self.text.replace_range(line_start..line_end, &content);
         } else {
             let selected = self.text[line_start..line_end].to_owned();
             let formatted = selected.lines().map(|line| format!("{prefix}{line}")).collect::<Vec<_>>().join("\n");
@@ -201,12 +220,10 @@ impl JotPad {
         let name = self.path.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or("Untitled");
         format!("{}{} — JotPad", name, if self.is_dirty() { " •" } else { "" })
     }
-
     fn word_count(&self) -> usize { self.text.split_whitespace().count() }
 }
 
 fn char_to_byte(text: &str, index: usize) -> usize { text.char_indices().nth(index).map_or(text.len(), |(byte, _)| byte) }
-
 fn heading_size(level: HeadingLevel) -> f32 {
     match level { HeadingLevel::H1 => 26.0, HeadingLevel::H2 => 23.0, HeadingLevel::H3 => 20.0, HeadingLevel::H4 => 18.0, HeadingLevel::H5 => 16.0, HeadingLevel::H6 => 14.0 }
 }
@@ -259,7 +276,7 @@ impl eframe::App for JotPad {
                 UpdateCheckResult::Update(release) => { self.update_status = format!("Version {} is available", release.version); self.update_available = Some(release); }
                 UpdateCheckResult::UpToDate => { self.update_status = "JotPad is up to date".to_owned(); self.update_available = None; }
                 UpdateCheckResult::NoRelease => { self.update_status = "No published GitHub releases yet".to_owned(); self.update_available = None; }
-                UpdateCheckResult::Failed(error) => { self.update_status = format!("Update check failed: {error}"); }
+                UpdateCheckResult::Failed(error) => self.update_status = format!("Update check failed: {error}"),
             }
         }
         if self.update_status == "Checking for updates…" { ctx.request_repaint_after(Duration::from_millis(250)); }
@@ -269,47 +286,74 @@ impl eframe::App for JotPad {
             input.consume_key(egui::Modifiers::COMMAND, egui::Key::O),
             input.consume_key(egui::Modifiers::COMMAND, egui::Key::S),
         ));
-        if new { self.request_action(PendingAction::New); } if open { self.request_action(PendingAction::Open); } if save { self.save_file(false); }
+        if new { self.request_action(PendingAction::New); }
+        if open { self.request_action(PendingAction::Open); }
+        if save { self.save_file(false); }
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
+            ui.spacing_mut().button_padding = egui::vec2(5.0, 3.0);
             if let Some(release) = &self.update_available {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("JotPad {} is available.", release.version)).strong());
-                    ui.hyperlink_to("View release and update", &release.url);
+                    ui.hyperlink_to("View release", &release.url);
                     if ui.small_button("Dismiss").clicked() { self.update_available = None; }
                 });
                 ui.separator();
             }
             ui.horizontal_wrapped(|ui| {
-                if ui.button("New").clicked() { self.request_action(PendingAction::New); }
-                if ui.button("Open").clicked() { self.request_action(PendingAction::Open); }
-                if ui.button("Save").clicked() { self.save_file(false); }
-                if ui.button("Save as…").clicked() { self.save_file(true); }
-                if ui.button("Export DOCX").clicked() { self.export_docx(); }
+                if ui.small_button("New").clicked() { self.request_action(PendingAction::New); }
+                if ui.small_button("Open").clicked() { self.request_action(PendingAction::Open); }
+                if ui.small_button("Save").clicked() { self.save_file(false); }
+                if ui.small_button("Save as…").clicked() { self.save_file(true); }
+                if ui.small_button("DOCX").clicked() { self.export_docx(); }
                 ui.separator();
-                if ui.button(egui::RichText::new("B").strong()).on_hover_text("Bold selected text").clicked() { self.pending_format = Some(FormatAction::Bold); }
-                if ui.button(egui::RichText::new("I").italics()).on_hover_text("Italic selected text").clicked() { self.pending_format = Some(FormatAction::Italic); }
-                if ui.button("Code").on_hover_text("Inline code").clicked() { self.pending_format = Some(FormatAction::Code); }
-                ui.menu_button("Heading", |ui| for level in 1..=6 { if ui.button(format!("Heading {level}")).clicked() { self.pending_format = Some(FormatAction::Heading(level)); ui.close_menu(); } });
-                ui.menu_button("Paragraph", |ui| {
-                    if ui.button("Normal paragraph").clicked() { self.pending_format = Some(FormatAction::Paragraph); ui.close_menu(); }
+                if ui.small_button(egui::RichText::new("B").strong()).on_hover_text("Bold").clicked() { self.pending_format = Some(FormatAction::Bold); }
+                if ui.small_button(egui::RichText::new("I").italics()).on_hover_text("Italic").clicked() { self.pending_format = Some(FormatAction::Italic); }
+                if ui.small_button("Code").clicked() { self.pending_format = Some(FormatAction::Code); }
+                ui.menu_button("H", |ui| for level in 1..=6 { if ui.button(format!("Heading {level}")).clicked() { self.pending_format = Some(FormatAction::Heading(level)); ui.close_menu(); } });
+                ui.menu_button("¶", |ui| {
+                    if ui.button("Paragraph").clicked() { self.pending_format = Some(FormatAction::Paragraph); ui.close_menu(); }
                     if ui.button("Bullet list").clicked() { self.pending_format = Some(FormatAction::BulletList); ui.close_menu(); }
                     if ui.button("Numbered list").clicked() { self.pending_format = Some(FormatAction::NumberedList); ui.close_menu(); }
                     if ui.button("Block quote").clicked() { self.pending_format = Some(FormatAction::Quote); ui.close_menu(); }
                     if ui.button("Code block").clicked() { self.pending_format = Some(FormatAction::CodeBlock); ui.close_menu(); }
                     if ui.button("Horizontal rule").clicked() { self.pending_format = Some(FormatAction::HorizontalRule); ui.close_menu(); }
                 });
-                ui.separator(); ui.label("Size"); ui.add(egui::Slider::new(&mut self.editor_font_size, 10.0..=32.0).show_value(true));
-                ui.label("Text color"); ui.color_edit_button_srgba(&mut self.editor_color);
+                ui.label("Size"); ui.add(egui::Slider::new(&mut self.editor_font_size, 10.0..=32.0).show_value(false).fixed_decimals(0).max_width(70.0));
+                ui.color_edit_button_srgba(&mut self.editor_color).on_hover_text("Editor text color");
                 ui.checkbox(&mut self.show_preview, "Preview"); ui.toggle_value(&mut self.dark_mode, "Dark");
-                if ui.button("Check updates").on_hover_text(&self.update_status).clicked() {
-                    self.update_status = "Checking for updates…".to_owned(); let _ = self.update_request.send(());
-                }
+                if ui.small_button("Updates").on_hover_text(&self.update_status).clicked() { self.update_status = "Checking for updates…".to_owned(); let _ = self.update_request.send(()); }
             });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            if self.show_preview {
+            if self.show_start {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(ui.available_height() * 0.12);
+                    ui.heading("Welcome to JotPad");
+                    ui.label("A simple space for your notes and Markdown documents.");
+                    ui.add_space(18.0);
+                    ui.horizontal(|ui| {
+                        if ui.add_sized([150.0, 36.0], egui::Button::new("＋  Create new")).clicked() { self.request_action(PendingAction::New); }
+                        if ui.add_sized([150.0, 36.0], egui::Button::new("Open a file")).clicked() { self.request_action(PendingAction::Open); }
+                    });
+                    ui.add_space(28.0);
+                    ui.set_max_width(520.0);
+                    ui.heading("Recent files");
+                    if self.recent_files.is_empty() {
+                        ui.label("Your recently opened or saved documents will appear here.");
+                    } else {
+                        let recent = self.recent_files.clone();
+                        for path in recent {
+                            let label = path.file_name().and_then(|name| name.to_str()).unwrap_or("Untitled");
+                            if ui.add_sized([ui.available_width(), 30.0], egui::Button::new(format!("▤  {label}   ·   {}", path.parent().unwrap_or(&path).display()))).clicked() {
+                                self.load_path(path);
+                            }
+                        }
+                    }
+                });
+            } else if self.show_preview {
                 ui.columns(2, |columns| {
                     columns[0].vertical(|ui| {
                         ui.label("Markdown");
@@ -335,14 +379,15 @@ impl eframe::App for JotPad {
             }
         });
 
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| ui.horizontal(|ui| {
-            ui.label(format!("{} words", self.word_count())); ui.separator();
-            ui.label(format!("{} characters", self.text.chars().count())); ui.separator();
-            ui.label(self.path.as_ref().map_or("Untitled", |p| p.file_name().and_then(|n| n.to_str()).unwrap_or("Untitled")));
-            if self.is_dirty() { ui.separator(); ui.label("Unsaved changes"); }
-            if let Some(notice) = &self.notice { ui.separator(); ui.label(notice); }
-            if let Some(error) = &self.error { ui.separator(); ui.colored_label(egui::Color32::LIGHT_RED, error); }
-        }));
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if !self.show_start { ui.label(format!("{} words", self.word_count())); ui.separator(); }
+                ui.label(self.path.as_ref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or(if self.show_start { "Start" } else { "Untitled" }));
+                if self.is_dirty() { ui.separator(); ui.label("Unsaved changes"); }
+                if let Some(notice) = &self.notice { ui.separator(); ui.label(notice); }
+                if let Some(error) = &self.error { ui.separator(); ui.colored_label(egui::Color32::LIGHT_RED, error); }
+            });
+        });
 
         if let Some(action) = self.pending_action {
             egui::Window::new("Unsaved changes").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).show(ctx, |ui| {
@@ -359,7 +404,7 @@ impl eframe::App for JotPad {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 620.0]).with_min_inner_size([520.0, 360.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([850.0, 580.0]).with_min_inner_size([520.0, 360.0]),
         ..Default::default()
     };
     eframe::run_native("JotPad", options, Box::new(|_creation_context| Ok(Box::<JotPad>::default())))

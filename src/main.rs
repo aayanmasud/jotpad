@@ -13,6 +13,20 @@ enum PendingAction {
 }
 
 #[derive(Clone, Copy)]
+enum FormatAction {
+    Bold,
+    Italic,
+    Code,
+    Heading(u8),
+    Paragraph,
+    BulletList,
+    NumberedList,
+    Quote,
+    CodeBlock,
+    HorizontalRule,
+}
+
+#[derive(Clone, Copy)]
 enum PreviewKind {
     Paragraph,
     Heading(HeadingLevel),
@@ -31,10 +45,14 @@ struct JotPad {
     saved_text: String,
     path: Option<PathBuf>,
     pending_action: Option<PendingAction>,
+    pending_format: Option<FormatAction>,
+    selection: (usize, usize),
     error: Option<String>,
     notice: Option<String>,
     dark_mode: bool,
     show_preview: bool,
+    editor_font_size: f32,
+    editor_color: egui::Color32,
 }
 
 impl Default for JotPad {
@@ -44,10 +62,14 @@ impl Default for JotPad {
             saved_text: String::new(),
             path: None,
             pending_action: None,
+            pending_format: None,
+            selection: (0, 0),
             error: None,
             notice: None,
             dark_mode: true,
             show_preview: false,
+            editor_font_size: 16.0,
+            editor_color: egui::Color32::WHITE,
         }
     }
 }
@@ -98,6 +120,7 @@ impl JotPad {
                     };
                     self.path = Some(path);
                     self.error = None;
+                    self.selection = (0, 0);
                 }
                 Err(error) => self.error = Some(error),
             }
@@ -114,10 +137,7 @@ impl JotPad {
             self.path.clone()
         };
 
-        let Some(path) = path else {
-            return;
-        };
-
+        let Some(path) = path else { return };
         match document::save(&path, &self.text) {
             Ok(()) => {
                 self.saved_text = self.text.clone();
@@ -134,41 +154,94 @@ impl JotPad {
             .add_filter("Word document", &["docx"])
             .set_file_name("untitled.docx")
             .save_file();
-
-        let Some(path) = path else {
-            return;
-        };
+        let Some(path) = path else { return };
 
         let plain_text = markdown_to_plain_text(&self.text);
         match document::save(&path, &plain_text) {
             Ok(()) => {
                 self.error = None;
-                self.notice = Some(
-                    "Exported to DOCX as plain text; Markdown styling is not included.".to_owned(),
-                );
+                self.notice = Some("Exported to DOCX as plain text; Markdown styling is not included.".to_owned());
             }
             Err(error) => self.error = Some(error),
         }
     }
 
+    fn apply_format(&mut self, action: FormatAction) {
+        let (start, end) = self.selection;
+        match action {
+            FormatAction::Bold => self.wrap_selection("**", "**"),
+            FormatAction::Italic => self.wrap_selection("*", "*"),
+            FormatAction::Code => self.wrap_selection("`", "`"),
+            FormatAction::Heading(level) => self.prefix_selected_lines(&format!("{} ", "#".repeat(level as usize))),
+            FormatAction::Paragraph => self.prefix_selected_lines(""),
+            FormatAction::BulletList => self.prefix_selected_lines("- "),
+            FormatAction::NumberedList => self.prefix_selected_lines("1. "),
+            FormatAction::Quote => self.prefix_selected_lines("> "),
+            FormatAction::CodeBlock => self.wrap_selection("```\n", "\n```"),
+            FormatAction::HorizontalRule => {
+                let insert_at = char_to_byte(&self.text, end);
+                self.text.insert_str(insert_at, "\n\n---\n\n");
+            }
+        }
+        if matches!(action, FormatAction::Paragraph) && start == end {
+            // Paragraph intentionally leaves the current line without a Markdown prefix.
+        }
+    }
+
+    fn wrap_selection(&mut self, before: &str, after: &str) {
+        let (start, end) = self.selection;
+        let start_byte = char_to_byte(&self.text, start);
+        let end_byte = char_to_byte(&self.text, end);
+        self.text.insert_str(end_byte, after);
+        self.text.insert_str(start_byte, before);
+    }
+
+    fn prefix_selected_lines(&mut self, prefix: &str) {
+        let (start, end) = self.selection;
+        let start_byte = char_to_byte(&self.text, start);
+        let end_byte = char_to_byte(&self.text, end);
+        let line_start = self.text[..start_byte]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        let line_end = self.text[end_byte..]
+            .find('\n')
+            .map_or(self.text.len(), |index| end_byte + index);
+
+        if prefix.is_empty() {
+            let line = &self.text[line_start..line_end];
+            let content_start = line.find(|character: char| character != '#' && character != ' ')
+                .unwrap_or(line.len());
+            let content = line[content_start..].to_owned();
+            self.text.replace_range(line_start..line_end, &content);
+            return;
+        }
+
+        let selected = self.text[line_start..line_end].to_owned();
+        let formatted = selected
+            .lines()
+            .map(|line| format!("{prefix}{line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.text.replace_range(line_start..line_end, &formatted);
+    }
+
     fn title(&self) -> String {
-        let name = self
-            .path
-            .as_ref()
+        let name = self.path.as_ref()
             .and_then(|path| path.file_name())
             .and_then(|name| name.to_str())
             .unwrap_or("Untitled");
-
-        format!(
-            "{}{} — JotPad",
-            name,
-            if self.is_dirty() { " •" } else { "" }
-        )
+        format!("{}{} — JotPad", name, if self.is_dirty() { " •" } else { "" })
     }
 
     fn word_count(&self) -> usize {
         self.text.split_whitespace().count()
     }
+}
+
+fn char_to_byte(text: &str, character_index: usize) -> usize {
+    text.char_indices()
+        .nth(character_index)
+        .map_or(text.len(), |(byte_index, _)| byte_index)
 }
 
 fn heading_size(level: HeadingLevel) -> f32 {
@@ -185,12 +258,9 @@ fn heading_size(level: HeadingLevel) -> f32 {
 fn markdown_preview_blocks(markdown: &str) -> Vec<PreviewBlock> {
     let mut blocks = Vec::new();
     let mut current: Option<PreviewBlock> = None;
-
     let flush = |current: &mut Option<PreviewBlock>, blocks: &mut Vec<PreviewBlock>| {
         if let Some(block) = current.take() {
-            if !block.text.trim().is_empty() {
-                blocks.push(block);
-            }
+            if !block.text.trim().is_empty() { blocks.push(block); }
         }
     };
 
@@ -198,315 +268,180 @@ fn markdown_preview_blocks(markdown: &str) -> Vec<PreviewBlock> {
         match event {
             Event::Start(Tag::Heading { level, .. }) => {
                 flush(&mut current, &mut blocks);
-                current = Some(PreviewBlock {
-                    kind: PreviewKind::Heading(level),
-                    text: String::new(),
-                });
+                current = Some(PreviewBlock { kind: PreviewKind::Heading(level), text: String::new() });
             }
             Event::Start(Tag::Paragraph) => {
                 flush(&mut current, &mut blocks);
-                current = Some(PreviewBlock {
-                    kind: PreviewKind::Paragraph,
-                    text: String::new(),
-                });
+                current = Some(PreviewBlock { kind: PreviewKind::Paragraph, text: String::new() });
             }
             Event::Start(Tag::Item) => {
                 flush(&mut current, &mut blocks);
-                current = Some(PreviewBlock {
-                    kind: PreviewKind::ListItem,
-                    text: "• ".to_owned(),
-                });
+                current = Some(PreviewBlock { kind: PreviewKind::ListItem, text: "• ".to_owned() });
             }
             Event::Start(Tag::CodeBlock(_)) => {
                 flush(&mut current, &mut blocks);
-                current = Some(PreviewBlock {
-                    kind: PreviewKind::Code,
-                    text: String::new(),
-                });
+                current = Some(PreviewBlock { kind: PreviewKind::Code, text: String::new() });
             }
             Event::Start(Tag::BlockQuote(_)) => {
                 flush(&mut current, &mut blocks);
-                current = Some(PreviewBlock {
-                    kind: PreviewKind::Quote,
-                    text: "│ ".to_owned(),
-                });
+                current = Some(PreviewBlock { kind: PreviewKind::Quote, text: "│ ".to_owned() });
             }
-            Event::End(
-                TagEnd::Heading(_)
-                | TagEnd::Paragraph
-                | TagEnd::Item
-                | TagEnd::CodeBlock
-                | TagEnd::BlockQuote,
-            ) => flush(&mut current, &mut blocks),
+            Event::End(TagEnd::Heading(_) | TagEnd::Paragraph | TagEnd::Item | TagEnd::CodeBlock | TagEnd::BlockQuote) => flush(&mut current, &mut blocks),
             Event::Text(text) | Event::Code(text) | Event::Html(text) | Event::InlineHtml(text) => {
-                current
-                    .get_or_insert_with(|| PreviewBlock {
-                        kind: PreviewKind::Paragraph,
-                        text: String::new(),
-                    })
-                    .text
-                    .push_str(&text);
+                current.get_or_insert_with(|| PreviewBlock { kind: PreviewKind::Paragraph, text: String::new() }).text.push_str(&text);
             }
-            Event::SoftBreak | Event::HardBreak => {
-                if let Some(block) = current.as_mut() {
-                    block.text.push('\n');
-                }
-            }
+            Event::SoftBreak | Event::HardBreak => if let Some(block) = current.as_mut() { block.text.push('\n'); },
             Event::Rule => {
                 flush(&mut current, &mut blocks);
-                blocks.push(PreviewBlock {
-                    kind: PreviewKind::Paragraph,
-                    text: "────────────────────────".to_owned(),
-                });
+                blocks.push(PreviewBlock { kind: PreviewKind::Paragraph, text: "────────────────────────".to_owned() });
             }
             Event::TaskListMarker(checked) => {
-                let block = current.get_or_insert_with(|| PreviewBlock {
-                    kind: PreviewKind::ListItem,
-                    text: String::new(),
-                });
+                let block = current.get_or_insert_with(|| PreviewBlock { kind: PreviewKind::ListItem, text: String::new() });
                 block.text.push_str(if checked { "☑ " } else { "☐ " });
             }
             _ => {}
         }
     }
-
     flush(&mut current, &mut blocks);
     blocks
 }
 
 fn markdown_to_plain_text(markdown: &str) -> String {
     let mut output = String::new();
-
     for event in Parser::new(markdown) {
         match event {
             Event::Start(Tag::Item) => output.push_str("• "),
-            Event::Text(text) | Event::Code(text) | Event::Html(text) | Event::InlineHtml(text) => {
-                output.push_str(&text);
-            }
+            Event::Text(text) | Event::Code(text) | Event::Html(text) | Event::InlineHtml(text) => output.push_str(&text),
             Event::SoftBreak | Event::HardBreak => output.push('\n'),
-            Event::End(
-                TagEnd::Paragraph
-                | TagEnd::Heading(_)
-                | TagEnd::Item
-                | TagEnd::CodeBlock
-                | TagEnd::BlockQuote,
-            ) => output.push('\n'),
+            Event::End(TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item | TagEnd::CodeBlock | TagEnd::BlockQuote) => output.push('\n'),
             Event::Rule => output.push_str("\n────────────────────────\n"),
-            Event::TaskListMarker(checked) => {
-                output.push_str(if checked { "☑ " } else { "☐ " });
-            }
+            Event::TaskListMarker(checked) => output.push_str(if checked { "☑ " } else { "☐ " }),
             _ => {}
         }
     }
-
     output.trim().to_owned()
 }
 
 impl eframe::App for JotPad {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
-
-        let mut visuals = if self.dark_mode {
-            egui::Visuals::dark()
-        } else {
-            egui::Visuals::light()
-        };
-        ctx.style_mut(|style| {
-            style.visuals = visuals.clone();
-            style.visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(12);
-            style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(12);
-            style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(12);
-            style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(12);
-            style.visuals.selection.bg_fill = egui::Color32::from_rgb(86, 156, 214);
-            style.visuals.selection.stroke =
-                egui::Stroke::new(1.0, egui::Color32::from_rgb(164, 206, 255));
-        });
-        visuals = ctx.style().visuals.clone();
+        let visuals = if self.dark_mode { egui::Visuals::dark() } else { egui::Visuals::light() };
         ctx.set_visuals(visuals);
 
-        let (new, open, save) = ctx.input_mut(|input| {
-            (
-                input.consume_key(egui::Modifiers::COMMAND, egui::Key::N),
-                input.consume_key(egui::Modifiers::COMMAND, egui::Key::O),
-                input.consume_key(egui::Modifiers::COMMAND, egui::Key::S),
-            )
-        });
-        if new {
-            self.request_action(PendingAction::New);
-        }
-        if open {
-            self.request_action(PendingAction::Open);
-        }
-        if save {
-            self.save_file(false);
-        }
+        if let Some(format) = self.pending_format.take() { self.apply_format(format); }
+        let (new, open, save) = ctx.input_mut(|input| (
+            input.consume_key(egui::Modifiers::COMMAND, egui::Key::N),
+            input.consume_key(egui::Modifiers::COMMAND, egui::Key::O),
+            input.consume_key(egui::Modifiers::COMMAND, egui::Key::S),
+        ));
+        if new { self.request_action(PendingAction::New); }
+        if open { self.request_action(PendingAction::Open); }
+        if save { self.save_file(false); }
 
-        egui::TopBottomPanel::top("toolbar")
-            .min_height(56.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_sized([68.0, 36.0], egui::Button::new("New").corner_radius(12.0))
-                        .clicked()
-                    {
-                        self.request_action(PendingAction::New);
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("New").clicked() { self.request_action(PendingAction::New); }
+                if ui.button("Open").clicked() { self.request_action(PendingAction::Open); }
+                if ui.button("Save").clicked() { self.save_file(false); }
+                if ui.button("Save as…").clicked() { self.save_file(true); }
+                if ui.button("Export DOCX").clicked() { self.export_docx(); }
+                ui.separator();
+                if ui.button(egui::RichText::new("B").strong()).on_hover_text("Bold selected text").clicked() { self.pending_format = Some(FormatAction::Bold); }
+                if ui.button(egui::RichText::new("I").italics()).on_hover_text("Italic selected text").clicked() { self.pending_format = Some(FormatAction::Italic); }
+                if ui.button("Code").on_hover_text("Inline code").clicked() { self.pending_format = Some(FormatAction::Code); }
+                ui.menu_button("Heading", |ui| {
+                    for level in 1..=6 {
+                        if ui.button(format!("Heading {level}")).clicked() {
+                            self.pending_format = Some(FormatAction::Heading(level));
+                            ui.close_menu();
+                        }
                     }
-                    if ui
-                        .add_sized([68.0, 36.0], egui::Button::new("Open").corner_radius(12.0))
-                        .clicked()
-                    {
-                        self.request_action(PendingAction::Open);
-                    }
-                    if ui
-                        .add_sized([68.0, 36.0], egui::Button::new("Save").corner_radius(12.0))
-                        .clicked()
-                    {
-                        self.save_file(false);
-                    }
-                    if ui
-                        .add_sized([84.0, 36.0], egui::Button::new("Save as").corner_radius(12.0))
-                        .clicked()
-                    {
-                        self.save_file(true);
-                    }
-                    if ui
-                        .add_sized([100.0, 36.0], egui::Button::new("Export DOCX").corner_radius(12.0))
-                        .clicked()
-                    {
-                        self.export_docx();
-                    }
-                    ui.checkbox(&mut self.show_preview, "Preview");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.toggle_value(&mut self.dark_mode, "Dark");
-                    });
                 });
+                ui.menu_button("Paragraph", |ui| {
+                    if ui.button("Normal paragraph").clicked() { self.pending_format = Some(FormatAction::Paragraph); ui.close_menu(); }
+                    if ui.button("Bullet list").clicked() { self.pending_format = Some(FormatAction::BulletList); ui.close_menu(); }
+                    if ui.button("Numbered list").clicked() { self.pending_format = Some(FormatAction::NumberedList); ui.close_menu(); }
+                    if ui.button("Block quote").clicked() { self.pending_format = Some(FormatAction::Quote); ui.close_menu(); }
+                    if ui.button("Code block").clicked() { self.pending_format = Some(FormatAction::CodeBlock); ui.close_menu(); }
+                    if ui.button("Horizontal rule").clicked() { self.pending_format = Some(FormatAction::HorizontalRule); ui.close_menu(); }
+                });
+                ui.separator();
+                ui.label("Editor size");
+                ui.add(egui::Slider::new(&mut self.editor_font_size, 10.0..=32.0).show_value(true));
+                ui.label("Editor color");
+                ui.color_edit_button_srgba(&mut self.editor_color);
+                ui.checkbox(&mut self.show_preview, "Preview");
+                ui.toggle_value(&mut self.dark_mode, "Dark");
             });
+        });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.show_preview {
-                let spacing = ui.spacing().item_spacing.x;
                 ui.columns(2, |columns| {
                     columns[0].vertical(|ui| {
                         ui.label("Markdown");
-                        ui.add_sized(
-                            ui.available_size(),
-                            egui::TextEdit::multiline(&mut self.text)
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(20)
-                                .code_editor(),
-                        );
+                        let output = egui::TextEdit::multiline(&mut self.text)
+                            .font(egui::FontId::monospace(self.editor_font_size))
+                            .text_color(self.editor_color)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(20)
+                            .code_editor()
+                            .show(ui);
+                        if let Some(range) = output.cursor_range {
+                            self.selection = (range.primary.index, range.secondary.index);
+                        }
                     });
                     columns[1].vertical(|ui| {
                         ui.label("Preview");
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             for block in markdown_preview_blocks(&self.text) {
                                 match block.kind {
-                                    PreviewKind::Heading(level) => {
-                                        ui.add(egui::Label::new(
-                                            egui::RichText::new(block.text)
-                                                .size(heading_size(level))
-                                                .strong(),
-                                        ));
-                                    }
-                                    PreviewKind::Code => {
-                                        ui.label(egui::RichText::new(block.text).monospace());
-                                    }
-                                    PreviewKind::Quote => {
-                                        ui.label(egui::RichText::new(block.text).italics());
-                                    }
-                                    PreviewKind::ListItem | PreviewKind::Paragraph => {
-                                        ui.label(block.text);
-                                    }
+                                    PreviewKind::Heading(level) => { ui.label(egui::RichText::new(block.text).size(heading_size(level)).strong()); }
+                                    PreviewKind::Code => { ui.label(egui::RichText::new(block.text).monospace()); }
+                                    PreviewKind::Quote => { ui.label(egui::RichText::new(block.text).italics()); }
+                                    PreviewKind::ListItem | PreviewKind::Paragraph => { ui.label(block.text); }
                                 }
                                 ui.add_space(4.0);
                             }
                         });
                     });
                 });
-                let _ = spacing;
             } else {
-                let frame = egui::Frame::central_panel(&ui.style())
-                    .fill(ui.visuals().panel_fill)
-                    .inner_margin(egui::Margin::same(8))
-                    .stroke(egui::Stroke::new(
-                        1.0_f32,
-                        ui.visuals().widgets.noninteractive.bg_stroke.color,
-                    ));
-                frame.show(ui, |ui| {
-                    ui.add_sized(
-                        ui.available_size(),
-                        egui::TextEdit::multiline(&mut self.text)
-                            .font(egui::TextStyle::Monospace)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(20)
-                            .code_editor(),
-                    );
-                });
+                let output = egui::TextEdit::multiline(&mut self.text)
+                    .font(egui::FontId::monospace(self.editor_font_size))
+                    .text_color(self.editor_color)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(20)
+                    .code_editor()
+                    .show(ui);
+                if let Some(range) = output.cursor_range {
+                    self.selection = (range.primary.index, range.secondary.index);
+                }
             }
         });
 
-        egui::TopBottomPanel::bottom("status")
-            .min_height(32.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(format!("{} words", self.word_count()));
-                    ui.separator();
-                    ui.label(format!("{} characters", self.text.chars().count()));
-                    ui.separator();
-                    ui.label(self.path.as_ref().map_or("Untitled", |path| {
-                        path.file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("Untitled")
-                    }));
-                    if self.is_dirty() {
-                        ui.separator();
-                        ui.label("Unsaved changes");
-                    }
-                    if let Some(notice) = &self.notice {
-                        ui.separator();
-                        ui.label(notice);
-                    }
-                    if let Some(error) = &self.error {
-                        ui.separator();
-                        ui.colored_label(egui::Color32::LIGHT_RED, error);
-                    }
-                });
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!("{} words", self.word_count()));
+                ui.separator();
+                ui.label(format!("{} characters", self.text.chars().count()));
+                ui.separator();
+                ui.label(self.path.as_ref().map_or("Untitled", |path| path.file_name().and_then(|name| name.to_str()).unwrap_or("Untitled")));
+                if self.is_dirty() { ui.separator(); ui.label("Unsaved changes"); }
+                if let Some(notice) = &self.notice { ui.separator(); ui.label(notice); }
+                if let Some(error) = &self.error { ui.separator(); ui.colored_label(egui::Color32::LIGHT_RED, error); }
             });
+        });
 
         if let Some(action) = self.pending_action {
-            egui::Window::new("Unsaved changes")
-                .collapsible(false)
-                .resizable(false)
+            egui::Window::new("Unsaved changes").collapsible(false).resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.label("You have unsaved changes. What would you like to do?");
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add_sized([90.0, 32.0], egui::Button::new("Save").corner_radius(12.0))
-                                .clicked()
-                            {
-                                self.save_file(false);
-                                if !self.is_dirty() {
-                                    self.pending_action = None;
-                                    self.perform_action(action);
-                                }
-                            }
-                            if ui
-                                .add_sized([90.0, 32.0], egui::Button::new("Discard").corner_radius(12.0))
-                                .clicked()
-                            {
-                                self.pending_action = None;
-                                self.perform_action(action);
-                            }
-                            if ui
-                                .add_sized([90.0, 32.0], egui::Button::new("Cancel").corner_radius(12.0))
-                                .clicked()
-                            {
-                                self.pending_action = None;
-                            }
-                        });
+                    ui.label("You have unsaved changes. What would you like to do?");
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() { self.save_file(false); if !self.is_dirty() { self.pending_action = None; self.perform_action(action); } }
+                        if ui.button("Discard").clicked() { self.pending_action = None; self.perform_action(action); }
+                        if ui.button("Cancel").clicked() { self.pending_action = None; }
                     });
                 });
         }
@@ -515,15 +450,8 @@ impl eframe::App for JotPad {
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([620.0, 420.0])
-            .with_min_inner_size([420.0, 300.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 620.0]).with_min_inner_size([520.0, 360.0]),
         ..Default::default()
     };
-
-    eframe::run_native(
-        "JotPad",
-        options,
-        Box::new(|_creation_context| Ok(Box::<JotPad>::default())),
-    )
+    eframe::run_native("JotPad", options, Box::new(|_creation_context| Ok(Box::<JotPad>::default())))
 }

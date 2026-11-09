@@ -26,6 +26,7 @@
     pre { padding:1rem; overflow:auto; border:1px solid var(--line); border-radius:.65rem; background:#080d17; color:#d5e7ff; }
     pre code { padding:0; }
     .note { border-left:3px solid var(--accent); padding-left:1rem; }
+    .availability { max-width:760px; margin:1.5rem auto 0; padding:.8rem 1rem; border:1px solid #4774a8; border-radius:.75rem; background:#10233b; color:var(--text); }
     footer { padding:1.5rem; border-top:1px solid var(--line); text-align:center; color:var(--muted); }
   </style>
 </head>
@@ -34,10 +35,11 @@
     <h1>JotPad</h1>
     <p>A lightweight Linux writing app for plain text and Markdown, with a live preview and text-focused DOCX import/export.</p>
     <a class="button" href="https://github.com/aayanmasud/jotpad/releases">View GitHub releases</a>
+    <p class="availability"><strong>Available on: Linux, including Arch Linux and CachyOS; usable with the Hyprland Wayland compositor.</strong><br>Arch/CachyOS users can build from source using the instructions below. No Arch package is advertised here unless one is published on the Releases page.</p>
   </header>
   <main>
     <nav aria-label="Page contents">
-      <a href="#install">Install</a><a href="#build">Build from source</a><a href="#use">Using JotPad</a><a href="#updates">Updates</a><a href="#uninstall">Uninstall</a><a href="#help">Troubleshooting</a>
+      <a href="#install">Install</a><a href="#arch">Arch / CachyOS / Hyprland</a><a href="#build">Build from source</a><a href="#use">Using JotPad</a><a href="#updates">Updates</a><a href="#uninstall">Uninstall</a><a href="#help">Troubleshooting</a>
     </nav>
     <section class="card" id="install">
       <h2>Install on Debian or MX Linux</h2>
@@ -48,9 +50,23 @@ sudo apt install ./jotpad_*.deb</code></pre>
       <pre><code>jotpad</code></pre>
       <p class="note">If no <code>.deb</code> is attached to a release, build from source using the instructions below. A GitHub source-code ZIP is not an installable Debian package.</p>
     </section>
+    <section class="card" id="arch">
+      <h2>Arch Linux and CachyOS (including Hyprland)</h2>
+      <p>Hyprland is a Wayland compositor, not a Linux distribution. JotPad is a Linux desktop app and can be built from source on Arch-based systems; the instructions below install build prerequisites and run the app directly. They do not install a system package or create an application-menu entry.</p>
+      <p>Install the required build tools and common graphics/windowing development libraries with pacman:</p>
+      <pre><code>sudo pacman -Syu
+sudo pacman -S --needed base-devel pkgconf gtk3 libx11 libxcursor libxrandr libxi mesa</code></pre>
+      <p>Install Rust/Cargo if needed (for example, with Arch's <code>rust</code> and <code>cargo</code> packages), then clone and run JotPad:</p>
+      <pre><code>sudo pacman -S --needed rust cargo
+git clone https://github.com/aayanmasud/jotpad.git
+cd jotpad
+cargo build --release
+./target/release/jotpad</code></pre>
+      <p>On Hyprland, launch it from a terminal inside your Wayland session. If the file picker or display backend fails, install the relevant GTK/Wayland/XWayland runtime components for your system and share the terminal error for diagnosis. AppImage or native Arch package availability is not claimed unless a corresponding artifact appears on the Releases page.</p>
+    </section>
     <section class="card" id="build">
-      <h2>Build and install from source</h2>
-      <p>Install the system libraries needed to build the desktop app on Debian-based Linux:</p>
+      <h2>Build and install from source (Debian-based Linux)</h2>
+      <p>Install the system libraries needed to build the desktop app:</p>
       <pre><code>sudo apt update
 sudo apt install build-essential pkg-config libgtk-3-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev</code></pre>
       <p>Install Rust and Cargo using the <a href="https://www.rust-lang.org/tools/install">official Rust instructions</a> if they are not already installed. Then clone and build JotPad:</p>
@@ -88,7 +104,7 @@ sudo apt install ./target/debian/*.deb</code></pre>
     </section>
     <section class="card" id="uninstall">
       <h2>Completely uninstall</h2>
-      <p>Remove the installed package and then unused dependencies:</p>
+      <p>Remove the installed Debian package and then unused dependencies:</p>
       <pre><code>sudo apt purge jotpad
 sudo apt autoremove --purge</code></pre>
       <p>Optionally remove JotPad's local recent-file history/settings:</p>

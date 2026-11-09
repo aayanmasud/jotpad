@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="JotPad for Linux: installation, usage, updates, uninstall instructions, and troubleshooting.">
+  <meta name="theme-color" content="#111827">
+  <title>JotPad — Linux writing app</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1120; --panel:#111b2e; --text:#e5edf8; --muted:#a9b8ce; --accent:#7cb7ff; --line:#263752; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif; }
+    header { padding:4rem 1.25rem 3rem; text-align:center; background:radial-gradient(ellipse at top,#1d3b63 0,transparent 65%); }
+    header h1 { margin:0; font-size:clamp(2.5rem,8vw,4.5rem); letter-spacing:-.05em; }
+    header p { max-width:650px; margin:1rem auto 1.5rem; color:var(--muted); font-size:1.15rem; }
+    a { color:var(--accent); }
+    .button { display:inline-block; padding:.7rem 1rem; border-radius:.65rem; background:#2563eb; color:white; text-decoration:none; font-weight:650; }
+    main { width:min(900px, calc(100% - 2rem)); margin:0 auto 4rem; }
+    nav,.card { border:1px solid var(--line); background:var(--panel); border-radius:1rem; padding:1.1rem 1.35rem; margin:1rem 0; }
+    nav { display:flex; flex-wrap:wrap; gap:.55rem 1.1rem; }
+    nav a { text-decoration:none; }
+    h2 { margin:0 0 .55rem; font-size:1.55rem; }
+    p,li { color:var(--muted); }
+    strong { color:var(--text); }
+    code { color:#d5e7ff; background:#0a1220; padding:.12rem .35rem; border-radius:.3rem; overflow-wrap:anywhere; }
+    pre { padding:1rem; overflow:auto; border:1px solid var(--line); border-radius:.65rem; background:#080d17; color:#d5e7ff; }
+    pre code { padding:0; }
+    .note { border-left:3px solid var(--accent); padding-left:1rem; }
+    footer { padding:1.5rem; border-top:1px solid var(--line); text-align:center; color:var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>JotPad</h1>
+    <p>A lightweight Linux writing app for plain text and Markdown, with a live preview and text-focused DOCX import/export.</p>
+    <a class="button" href="https://github.com/aayanmasud/jotpad/releases">View GitHub releases</a>
+  </header>
+  <main>
+    <nav aria-label="Page contents">
+      <a href="#install">Install</a><a href="#build">Build from source</a><a href="#use">Using JotPad</a><a href="#updates">Updates</a><a href="#uninstall">Uninstall</a><a href="#help">Troubleshooting</a>
+    </nav>
+    <section class="card" id="install">
+      <h2>Install on Debian or MX Linux</h2>
+      <p>Open the <a href="https://github.com/aayanmasud/jotpad/releases">Releases page</a> and download a Linux <code>.deb</code> asset if one is published. In a terminal, change to the directory containing the downloaded package (usually Downloads), then install it:</p>
+      <pre><code>cd ~/Downloads
+sudo apt install ./jotpad_*.deb</code></pre>
+      <p>Search your applications menu for <strong>JotPad</strong>, or start it in a terminal:</p>
+      <pre><code>jotpad</code></pre>
+      <p class="note">If no <code>.deb</code> is attached to a release, build from source using the instructions below. A GitHub source-code ZIP is not an installable Debian package.</p>
+    </section>
+    <section class="card" id="build">
+      <h2>Build and install from source</h2>
+      <p>Install the system libraries needed to build the desktop app on Debian-based Linux:</p>
+      <pre><code>sudo apt update
+sudo apt install build-essential pkg-config libgtk-3-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev</code></pre>
+      <p>Install Rust and Cargo using the <a href="https://www.rust-lang.org/tools/install">official Rust instructions</a> if they are not already installed. Then clone and build JotPad:</p>
+      <pre><code>git clone https://github.com/aayanmasud/jotpad.git
+cd jotpad
+cargo build --release
+./target/release/jotpad</code></pre>
+      <p>To create and install a Debian package:</p>
+      <pre><code>cargo install cargo-deb
+cargo deb
+sudo apt install ./target/debian/*.deb</code></pre>
+      <p>If Cargo reports that <code>cargo-deb</code> is already installed, continue with <code>cargo deb</code>. If packaging reports a missing asset, verify the checkout contains <code>assets/jotpad.desktop</code> and <code>assets/jotpad.svg</code>.</p>
+    </section>
+    <section class="card" id="use">
+      <h2>Using JotPad</h2>
+      <ul>
+        <li>Create a document, open a text or Markdown file, edit it, and save it from the toolbar.</li>
+        <li>Use the formatting toolbar to add Markdown syntax for headings, bold, italic, lists, quotes, and code. Use Preview to view rendered Markdown.</li>
+        <li>Editor font-size and text-color controls affect the editor view; they do not add rich-text styling to Markdown files.</li>
+        <li>The start page provides create/open actions and can list recently opened or saved files in versions that include recent-file support.</li>
+        <li>Keyboard shortcuts: <kbd>Ctrl</kbd>+<kbd>N</kbd> for new, <kbd>Ctrl</kbd>+<kbd>O</kbd> for open, and <kbd>Ctrl</kbd>+<kbd>S</kbd> for save (use Command instead of Ctrl on macOS).</li>
+      </ul>
+      <p><strong>DOCX compatibility:</strong> JotPad handles DOCX primarily as text. It does not preserve Word page layout, tables, images, or rich formatting. DOCX export may contain plain text rather than the Markdown styling shown in Preview.</p>
+    </section>
+    <section class="card" id="updates">
+      <h2>Update JotPad</h2>
+      <p>Versions with the update checker can query GitHub for the latest published release and notify you if it is newer than the app version. The notification links to the release page; it does not download or install updates automatically. This requires an internet connection and a published GitHub Release.</p>
+      <p>To update a source checkout and rebuild:</p>
+      <pre><code>cd ~/jotpad
+git pull origin main
+cargo build --release
+cargo deb
+sudo apt install ./target/debian/*.deb</code></pre>
+      <p>If Git refuses to pull because of local edits, do not run <code>git reset --hard</code> unless you intend to discard them. Back up or commit your work first, or get help resolving the pull safely.</p>
+    </section>
+    <section class="card" id="uninstall">
+      <h2>Completely uninstall</h2>
+      <p>Remove the installed package and then unused dependencies:</p>
+      <pre><code>sudo apt purge jotpad
+sudo apt autoremove --purge</code></pre>
+      <p>Optionally remove JotPad's local recent-file history/settings:</p>
+      <pre><code>rm -rf ~/.config/jotpad</code></pre>
+      <p>This does not remove your documents or cloned source checkout. Remove that folder only if you no longer need it and have backed up local changes:</p>
+      <pre><code>rm -rf ~/jotpad</code></pre>
+    </section>
+    <section class="card" id="help">
+      <h2>Troubleshooting</h2>
+      <ul>
+        <li><strong>App is not in the menu:</strong> confirm installation completed, try <code>jotpad</code> in a terminal, then sign out and back in if needed.</li>
+        <li><strong>No package was found:</strong> <code>cargo deb</code> must finish successfully and create a file under <code>target/debian/</code> before installation.</li>
+        <li><strong>No update notice:</strong> a commit alone is not a release. Check the Releases page and confirm the published version is newer than the installed app.</li>
+        <li><strong>Build or installation fails:</strong> copy the complete terminal output and open an issue at <a href="https://github.com/aayanmasud/jotpad/issues">GitHub Issues</a>.</li>
+      </ul>
+    </section>
+  </main>
+  <footer>JotPad is open source. <a href="https://github.com/aayanmasud/jotpad">View the source on GitHub</a>.</footer>
+</body>
+</html>
